@@ -32,8 +32,84 @@ const lastNDays = (n, from) => {
 };
 const weekdayNarrow = (d) => new Date(d + "T12:00:00").toLocaleDateString("it-IT", { weekday: "narrow" });
 
-// ─── DATABASE PASTI ─────────────────────────────────────────
-const PASTI_DB = [
+// ─── CONFIG ──────────────────────────────────────────────────
+// Dopo aver pubblicato il Google Sheet come CSV, incolla qui l'URL.
+// File → Condividi → Pubblica sul web → Foglio 1 → CSV → Pubblica
+// L'URL ha questa forma:
+// https://docs.google.com/spreadsheets/d/e/XXXXXXX/pub?gid=0&single=true&output=csv
+const SHEET_CSV_URL = "";
+
+// Quanto spesso ri-fetchare il foglio (ms). Default: 1 ora.
+const SHEET_REFRESH_MS = 60 * 60 * 1000;
+
+// ─── CSV PARSER (leggero, gestisce campi quoted) ────────────
+const parseCSV = (text) => {
+  const lines = text.trim().split("\n");
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(",").map(h => h.trim().replace(/^"|"$/g, "").toLowerCase());
+  return lines.slice(1).map(line => {
+    const vals = []; let cur = ""; let inQ = false;
+    for (const ch of line) {
+      if (ch === '"') { inQ = !inQ; }
+      else if (ch === ',' && !inQ) { vals.push(cur.trim()); cur = ""; }
+      else cur += ch;
+    }
+    vals.push(cur.trim());
+    const obj = {};
+    headers.forEach((h, i) => { obj[h] = (vals[i] || "").replace(/^"|"$/g, ""); });
+    return obj;
+  }).filter(r => r.id && r.tipo && r.nome);
+};
+
+// ─── HOOK: PASTI DA GOOGLE SHEETS ───────────────────────────
+const usePastiDB = (defaultPasti) => {
+  const [pasti, setPasti] = useState(() => {
+    try {
+      const cached = localStorage.getItem("vitasana-pasti-cache");
+      if (cached) return JSON.parse(cached);
+    } catch {}
+    return defaultPasti;
+  });
+  const [source, setSource] = useState("cache");
+
+  useEffect(() => {
+    if (!SHEET_CSV_URL) { setSource("default"); return; }
+
+    // Controlla se serve refresh
+    const lastFetch = +(localStorage.getItem("vitasana-pasti-ts") || "0");
+    if (Date.now() - lastFetch < SHEET_REFRESH_MS) { setSource("cache"); return; }
+
+    (async () => {
+      try {
+        const res = await fetch(SHEET_CSV_URL);
+        if (!res.ok) throw new Error(res.status);
+        const text = await res.text();
+        const rows = parseCSV(text);
+        if (rows.length > 0) {
+          const mapped = rows.map(r => ({
+            id: r.id,
+            tipo: r.tipo,
+            nome: r.nome,
+            tempo: parseInt(r.tempo) || 10,
+            emoji: r.emoji || "🍽️",
+          }));
+          setPasti(mapped);
+          localStorage.setItem("vitasana-pasti-cache", JSON.stringify(mapped));
+          localStorage.setItem("vitasana-pasti-ts", String(Date.now()));
+          setSource("sheet");
+        }
+      } catch (e) {
+        console.warn("Fetch Google Sheet fallito, uso cache/default:", e);
+        setSource("fallback");
+      }
+    })();
+  }, []);
+
+  return [pasti, source];
+};
+
+// ─── DATABASE PASTI (fallback se Sheet non configurato) ─────
+const DEFAULT_PASTI = [
   { id:"c1", tipo:"colazione", nome:"Yogurt greco + frutti di bosco + noci", tempo:5, emoji:"🫐" },
   { id:"c2", tipo:"colazione", nome:"Uova strapazzate + pane integrale + avocado", tempo:10, emoji:"🍳" },
   { id:"c3", tipo:"colazione", nome:"Frittata verdure + feta", tempo:15, emoji:"🥚" },
@@ -343,7 +419,7 @@ const Dashboard = ({ diario, saveDiario, streak, date, setDate }) => {
 // ═══════════════════════════════════════════════════════════════
 // DIARIO PASTI
 // ═══════════════════════════════════════════════════════════════
-const DiarioPasti = ({ diario, saveDiario, date, setDate }) => {
+const DiarioPasti = ({ diario, saveDiario, date, setDate, pastiDB }) => {
   const entry = diario[date] || {};
   const pasti = entry.pasti || [];
   const [tipo, setTipo] = useState("colazione");
@@ -360,7 +436,7 @@ const DiarioPasti = ({ diario, saveDiario, date, setDate }) => {
     saveDiario({ ...diario, [date]: { ...entry, pasti: pasti.filter((_, j) => j !== i) } });
   };
 
-  const suggestions = PASTI_DB.filter(p => p.tipo === tipo);
+  const suggestions = pastiDB.filter(p => p.tipo === tipo);
 
   return (
     <div className="space-y-4 pb-4">
@@ -456,11 +532,11 @@ const DiarioPasti = ({ diario, saveDiario, date, setDate }) => {
 // ═══════════════════════════════════════════════════════════════
 // SUGGERIMENTI PASTI
 // ═══════════════════════════════════════════════════════════════
-const SuggerimentiPasti = ({ diario, saveDiario, date }) => {
+const SuggerimentiPasti = ({ diario, saveDiario, date, pastiDB }) => {
   const [filtro, setFiltro] = useState("tutti");
   const [tempoMax, setTempoMax] = useState(60);
   const entry = diario[date] || {};
-  const filtered = PASTI_DB.filter(p => (filtro === "tutti" || p.tipo === filtro) && p.tempo <= tempoMax);
+  const filtered = pastiDB.filter(p => (filtro === "tutti" || p.tipo === filtro) && p.tempo <= tempoMax);
 
   const addToLog = (item) => {
     const e = { ...entry, pasti: [...(entry.pasti||[]), { tipo: item.tipo, testo: item.nome }], esercizi: entry.esercizi || [], acqua: entry.acqua || 0 };
@@ -468,10 +544,13 @@ const SuggerimentiPasti = ({ diario, saveDiario, date }) => {
   };
 
   const dayIdx = new Date(date + "T12:00:00").getDate();
+  const colazioni = pastiDB.filter(p => p.tipo === "colazione");
+  const pranzi = pastiDB.filter(p => p.tipo === "pranzo");
+  const cene = pastiDB.filter(p => p.tipo === "cena");
   const menuGiorno = {
-    colazione: PASTI_DB.filter(p => p.tipo === "colazione")[dayIdx % 8],
-    pranzo: PASTI_DB.filter(p => p.tipo === "pranzo")[dayIdx % 9],
-    cena: PASTI_DB.filter(p => p.tipo === "cena")[dayIdx % 8],
+    colazione: colazioni[dayIdx % (colazioni.length || 1)] || colazioni[0],
+    pranzo: pranzi[dayIdx % (pranzi.length || 1)] || pranzi[0],
+    cena: cene[dayIdx % (cene.length || 1)] || cene[0],
   };
 
   return (
@@ -708,6 +787,7 @@ const EserciziProgresso = ({ diario, saveDiario, streak, date, setDate }) => {
 export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [diario, saveDiario] = useStorage("vitasana-diario-v2", {});
+  const [pastiDB, pastiSource] = usePastiDB(DEFAULT_PASTI);
   const [date, setDate] = useState(todayStr());
 
   const streak = useMemo(() => {
@@ -735,8 +815,8 @@ export default function App() {
     <div className="min-h-screen bg-gray-50 flex flex-col" style={{ maxWidth: 480, margin: "0 auto" }}>
       <div className="flex-1 overflow-y-auto px-4 pt-3 pb-24">
         {tab === "dashboard" && <Dashboard diario={diario} saveDiario={saveDiario} streak={streak} date={date} setDate={setDate}/>}
-        {tab === "diario" && <DiarioPasti diario={diario} saveDiario={saveDiario} date={date} setDate={setDate}/>}
-        {tab === "suggerimenti" && <SuggerimentiPasti diario={diario} saveDiario={saveDiario} date={date}/>}
+        {tab === "diario" && <DiarioPasti diario={diario} saveDiario={saveDiario} date={date} setDate={setDate} pastiDB={pastiDB}/>}
+        {tab === "suggerimenti" && <SuggerimentiPasti diario={diario} saveDiario={saveDiario} date={date} pastiDB={pastiDB}/>}
         {tab === "esercizi" && <EserciziProgresso diario={diario} saveDiario={saveDiario} streak={streak} date={date} setDate={setDate}/>}
       </div>
 
