@@ -37,7 +37,7 @@ const weekdayNarrow = (d) => new Date(d + "T12:00:00").toLocaleDateString("it-IT
 // File → Condividi → Pubblica sul web → Foglio 1 → CSV → Pubblica
 // L'URL ha questa forma:
 // https://docs.google.com/spreadsheets/d/e/XXXXXXX/pub?gid=0&single=true&output=csv
-const SHEET_CSV_URL = "";
+const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSRANhdeT5wcJ9OrohIq5FRny7NZF13-ai7hOizVu8BTnGmEllQuJykqgigJm-xTYnaV-SWjUNomvre/pub?gid=866182632&single=true&output=csv";
 
 // Quanto spesso ri-fetchare il foglio (ms). Default: 1 ora.
 const SHEET_REFRESH_MS = 60 * 60 * 1000;
